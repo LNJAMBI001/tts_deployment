@@ -5,10 +5,33 @@ import numpy as np
 import onnxruntime as ort
 import pickle
 import scipy.io.wavfile as wavfile
-from pathlib import Path
+import subprocess
+import sys
 
 st.set_page_config(page_title="Text to Speech App", layout="centered")
 st.title("🗣️ Text to Speech with Piper TTS")
+
+# ------------------------
+# Install required packages
+# ------------------------
+def install_requirements():
+    with st.spinner("Installing required packages..."):
+        # Install piper-phonemize
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "piper-phonemize"])
+            st.success("Successfully installed piper-phonemize!")
+            return True
+        except Exception as e:
+            st.error(f"Failed to install piper-phonemize: {e}")
+            return False
+
+# Check if installation button is clicked
+if 'requirements_installed' not in st.session_state:
+    st.session_state.requirements_installed = False
+
+if not st.session_state.requirements_installed:
+    if st.button("Install piper-phonemize"):
+        st.session_state.requirements_installed = install_requirements()
 
 # ------------------------
 # Download model files
@@ -19,7 +42,7 @@ TOKENIZER_PATH = os.path.join(MODEL_DIR, "tokenizer.pkl")
 
 # Fixed Google Drive URLs for direct downloading
 MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1-01P3elJi2U1S2yMkBXVsGiBMVwJNhzs"
-# Corrected URL format for tokenizer - convert from view to download link
+# Corrected URL format for tokenizer
 TOKENIZER_DRIVE_URL = "https://drive.google.com/uc?id=185z5i6ZkmeMgk7KcAiJ5K3zzcfB2HSCr"
 
 os.makedirs(MODEL_DIR, exist_ok=True)
@@ -45,7 +68,9 @@ if not model_downloaded or not tokenizer_downloaded:
     st.error("Failed to download required files. Please check the download URLs.")
     st.stop()
 
-# Load tokenizer
+# ------------------------
+# Load tokenizer and model
+# ------------------------
 @st.cache_resource
 def load_tokenizer():
     if os.path.isfile(TOKENIZER_PATH):
@@ -59,29 +84,6 @@ def load_tokenizer():
         st.error("Tokenizer file not found. Please check the download URL.")
         return None
 
-# ------------------------
-# Very simple text-to-phoneme conversion
-# ------------------------
-def simple_phonemize(text, language="en-us"):
-    """
-    Very basic phonemization that just converts text to ASCII values.
-    This is a placeholder and won't produce proper phonemes.
-    """
-    # Just convert each character to its ASCII value and create a flat list
-    phoneme_ids = []
-    for char in text:
-        # Convert to int and ensure it's within a reasonable range for the model
-        char_id = ord(char) % 256  # Cap at 256 to avoid large values
-        phoneme_ids.append(char_id)
-    
-    # Add padding or special tokens if needed (model-dependent)
-    # You might need to add start/end tokens depending on your model
-    
-    return phoneme_ids
-
-# ------------------------
-# Load model
-# ------------------------
 @st.cache_resource
 def load_model():
     if os.path.isfile(MODEL_PATH):
@@ -95,18 +97,89 @@ def load_model():
         return None
 
 session = load_model()
+tokenizer = load_tokenizer()
+
+# ------------------------
+# Phonemization Functions
+# ------------------------
+def use_piper_phonemize(text, language="en-us", phonemizer_type="espeak"):
+    """Use the piper-phonemize library to convert text to phonemes"""
+    try:
+        # Try to import piper_phonemize after installation
+        from piper_phonemize import phonemize_espeak, phonemize_segments
+        
+        if phonemizer_type == "espeak":
+            # Use espeak phonemizer
+            phoneme_list = phonemize_espeak(text, language)
+            st.success("✅ Used piper-phonemize with espeak")
+        else:
+            # Use segments phonemizer (alternative)
+            phoneme_list = phonemize_segments(text, language)
+            st.success("✅ Used piper-phonemize with segments")
+            
+        return phoneme_list
+    except Exception as e:
+        st.warning(f"Could not use piper-phonemize: {e}")
+        return None
+        
+def simple_phonemize(text, language="en-us"):
+    """Fallback phonemization if piper-phonemize is not available"""
+    # Just convert each character to its ASCII value and create a flat list
+    phoneme_ids = []
+    for char in text:
+        char_id = ord(char) % 256
+        phoneme_ids.append(char_id)
+    
+    # Format it for compatibility with piper's phoneme list structure
+    # The phoneme list should be a list of lists of lists
+    # [[word1_phonemes], [word2_phonemes], ...]
+    return [[phoneme_ids]]
 
 # ------------------------
 # UI
 # ------------------------
-text = st.text_area("Enter text to synthesize:", value="Hello, this is a test.", height=150)
-voice = st.selectbox("Voice", ["en-us"])  # More voices can be added
+text = st.text_area("Enter text to synthesize:", 
+                   value="The quick brown fox jumps over the lazy dog.",
+                   height=150)
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    voice = st.selectbox("Voice", ["en-us", "en-gb"])
+    
+with col2:
+    phonemizer = st.selectbox("Phonemizer", ["piper (espeak)", "piper (segments)", "simple"])
+    
+with col3:
+    # Speech parameters
+    duration_scale = st.slider("Speech Duration", 0.5, 2.0, 1.0, 0.1)
+    pitch_scale = st.slider("Pitch", 0.5, 2.0, 1.0, 0.1)
+    energy_scale = st.slider("Energy", 0.5, 2.0, 1.0, 0.1)
 
 # Debug information
 with st.expander("Debug Information"):
     st.write(f"Model file exists: {os.path.isfile(MODEL_PATH)}")
     st.write(f"Tokenizer file exists: {os.path.isfile(TOKENIZER_PATH)}")
     st.write(f"Model directory contents: {os.listdir(MODEL_DIR) if os.path.exists(MODEL_DIR) else 'Directory not found'}")
+    
+    # Check if piper-phonemize is available
+    try:
+        import piper_phonemize
+        st.success("piper-phonemize is installed!")
+    except ImportError:
+        st.warning("piper-phonemize is not installed. Use the install button above.")
+    
+    # Show tokenizer info if available
+    if tokenizer:
+        st.write("Tokenizer loaded successfully")
+        st.write(f"Tokenizer type: {type(tokenizer)}")
+        try:
+            if hasattr(tokenizer, '__dict__'):
+                st.write("Tokenizer attributes:")
+                for key in list(tokenizer.__dict__.keys())[:10]:  # Show first 10 attributes to avoid clutter
+                    st.write(f"- {key}")
+        except:
+            st.write("Could not inspect tokenizer attributes")
 
 # Show model input requirements
 if session:
@@ -146,23 +219,35 @@ if st.button("🎤 Generate Speech") and text.strip():
         st.stop()
         
     try:
-        # Use the simple phonemizer since piper-phonemize is not available
-        st.info("Using simplified phonemization (character-based)")
+        # Get phonemes based on selected method
+        phoneme_list = None
         
-        # Get phoneme IDs using our simple method
-        phoneme_ids = simple_phonemize(text, voice)
+        if phonemizer.startswith("piper") and st.session_state.requirements_installed:
+            phonemizer_type = "espeak" if "espeak" in phonemizer else "segments"
+            phoneme_list = use_piper_phonemize(text, voice, phonemizer_type)
         
-        st.write(f"Generated {len(phoneme_ids)} phoneme IDs")
+        # Fallback to simple phonemizer if piper fails or isn't selected
+        if phoneme_list is None:
+            st.warning("Using simplified phonemization (character-based)")
+            phoneme_list = simple_phonemize(text, voice)
+        
+        # Flatten phoneme list (convert from list of lists of lists to a single list)
+        flat_phonemes = []
+        for word_phonemes in phoneme_list:
+            for phoneme in word_phonemes:
+                if isinstance(phoneme, list):
+                    flat_phonemes.extend(phoneme)
+                else:
+                    flat_phonemes.append(phoneme)
+        
+        st.write(f"Generated {len(flat_phonemes)} phoneme IDs")
         
         # Create the input tensor with proper shape for the model
-        # From error message: the model expects 'input', 'input_lengths', and 'scales'
-        input_tensor = np.array([phoneme_ids], dtype=np.int64)
-        input_lengths = np.array([len(phoneme_ids)], dtype=np.int64)
+        input_tensor = np.array([flat_phonemes], dtype=np.int64)
+        input_lengths = np.array([len(flat_phonemes)], dtype=np.int64)
         
-        # 'scales' seems to be a 3-element array of floats, likely controlling 
-        # aspects of the speech like duration, pitch, and energy
-        # Using default values (1.0) which should be neutral
-        scales = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+        # Set scales according to UI sliders
+        scales = np.array([duration_scale, pitch_scale, energy_scale], dtype=np.float32)
         
         st.write(f"Input tensor shape: {input_tensor.shape}")
         st.write(f"Input lengths: {input_lengths}")
@@ -176,10 +261,13 @@ if st.button("🎤 Generate Speech") and text.strip():
         }
         
         # Add a checkbox to show the actual input
-        if st.checkbox("Show model input"):
+        if st.checkbox("Show model input details"):
             st.write("Model input:")
             st.write({k: v.shape for k, v in inputs.items()})
             st.write({k: v.dtype for k, v in inputs.items()})
+            # Show a sample of the phoneme IDs
+            st.write("Sample phoneme IDs (first 20):")
+            st.write(flat_phonemes[:20])
         
         outputs = session.run(None, inputs)
         
@@ -206,6 +294,21 @@ if st.button("🎤 Generate Speech") and text.strip():
         
         st.success("✅ Audio generated!")
         st.audio(wav_path, format="audio/wav")
+        
+        # Show a plot of the audio waveform
+        if st.checkbox("Show audio waveform"):
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(output)
+            ax.set_title("Audio Waveform")
+            ax.set_xlabel("Sample")
+            ax.set_ylabel("Amplitude")
+            st.pyplot(fig)
+            
+            # Show some audio statistics
+            st.write(f"Audio length: {len(output)} samples ({len(output)/22050:.2f} seconds)")
+            st.write(f"Audio min: {output.min()}, max: {output.max()}, mean: {output.mean():.2f}")
+            
     except Exception as e:
         st.error(f"❌ Error during inference: {str(e)}")
         import traceback
@@ -214,8 +317,8 @@ if st.button("🎤 Generate Speech") and text.strip():
         # Provide more specific troubleshooting steps
         st.error("Troubleshooting tips:")
         st.markdown("""
-        1. Check that the input names match exactly what the model expects
-        2. Ensure input tensor shapes match the model's requirements
-        3. Verify data types (int64 for IDs, float32 for scales)
-        4. Try adjusting the scale values if audio quality is poor
+        1. If you're seeing phonemization errors, try installing piper-phonemize
+        2. If you're seeing shape errors, check the phoneme list structure
+        3. Try adjusting the scale values if audio quality is poor
+        4. Try a different input text (some characters might not be supported)
         """)
