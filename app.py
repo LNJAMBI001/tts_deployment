@@ -108,20 +108,37 @@ with st.expander("Debug Information"):
     st.write(f"Tokenizer file exists: {os.path.isfile(TOKENIZER_PATH)}")
     st.write(f"Model directory contents: {os.listdir(MODEL_DIR) if os.path.exists(MODEL_DIR) else 'Directory not found'}")
 
-# Show a raw tokenizer preview
-tokenizer = load_tokenizer()
-if tokenizer:
-    with st.expander("Tokenizer Information"):
-        st.write("Tokenizer loaded successfully")
-        st.write(f"Tokenizer type: {type(tokenizer)}")
-        # Try to display some basic info about the tokenizer
+# Show model input requirements
+if session:
+    with st.expander("Model Information"):
         try:
-            if hasattr(tokenizer, '__dict__'):
-                st.write("Tokenizer attributes:")
-                for key in tokenizer.__dict__:
-                    st.write(f"- {key}")
-        except:
-            st.write("Could not inspect tokenizer attributes")
+            # Get input names and shapes
+            input_details = []
+            for i in range(len(session.get_inputs())):
+                input_detail = session.get_inputs()[i]
+                input_details.append({
+                    "name": input_detail.name,
+                    "shape": input_detail.shape,
+                    "type": input_detail.type
+                })
+            
+            st.write("Model expects these inputs:")
+            st.write(input_details)
+            
+            # Get output info
+            output_details = []
+            for i in range(len(session.get_outputs())):
+                output_detail = session.get_outputs()[i]
+                output_details.append({
+                    "name": output_detail.name,
+                    "shape": output_detail.shape,
+                    "type": output_detail.type
+                })
+            
+            st.write("Model produces these outputs:")
+            st.write(output_details)
+        except Exception as e:
+            st.error(f"Could not get model details: {e}")
 
 if st.button("🎤 Generate Speech") and text.strip():
     if not session:
@@ -135,22 +152,34 @@ if st.button("🎤 Generate Speech") and text.strip():
         # Get phoneme IDs using our simple method
         phoneme_ids = simple_phonemize(text, voice)
         
-        # Print the phoneme IDs for debugging
         st.write(f"Generated {len(phoneme_ids)} phoneme IDs")
         
         # Create the input tensor with proper shape for the model
-        # Shape should be [batch_size=1, sequence_length]
-        phoneme_tensor = np.array([phoneme_ids], dtype=np.int64)
+        # From error message: the model expects 'input', 'input_lengths', and 'scales'
+        input_tensor = np.array([phoneme_ids], dtype=np.int64)
+        input_lengths = np.array([len(phoneme_ids)], dtype=np.int64)
         
-        st.write(f"Input tensor shape: {phoneme_tensor.shape}")
+        # 'scales' seems to be a 3-element array of floats, likely controlling 
+        # aspects of the speech like duration, pitch, and energy
+        # Using default values (1.0) which should be neutral
+        scales = np.array([1.0, 1.0, 1.0], dtype=np.float32)
         
-        # Run inference
-        inputs = {"phoneme_ids": phoneme_tensor}
+        st.write(f"Input tensor shape: {input_tensor.shape}")
+        st.write(f"Input lengths: {input_lengths}")
+        st.write(f"Scales: {scales}")
+        
+        # Run inference with properly named inputs
+        inputs = {
+            "input": input_tensor,
+            "input_lengths": input_lengths,
+            "scales": scales
+        }
         
         # Add a checkbox to show the actual input
         if st.checkbox("Show model input"):
             st.write("Model input:")
-            st.write(inputs)
+            st.write({k: v.shape for k, v in inputs.items()})
+            st.write({k: v.dtype for k, v in inputs.items()})
         
         outputs = session.run(None, inputs)
         
@@ -181,21 +210,12 @@ if st.button("🎤 Generate Speech") and text.strip():
         st.error(f"❌ Error during inference: {str(e)}")
         import traceback
         st.error(traceback.format_exc())
-        st.error("Please check if all model files are correctly downloaded and the input format is correct.")
         
-        # Add model info to help debug
-        try:
-            # Get input names and shapes
-            input_details = []
-            for i in range(len(session.get_inputs())):
-                input_detail = session.get_inputs()[i]
-                input_details.append({
-                    "name": input_detail.name,
-                    "shape": input_detail.shape,
-                    "type": input_detail.type
-                })
-            
-            st.write("Model expects these inputs:")
-            st.write(input_details)
-        except:
-            st.write("Could not get model input details")
+        # Provide more specific troubleshooting steps
+        st.error("Troubleshooting tips:")
+        st.markdown("""
+        1. Check that the input names match exactly what the model expects
+        2. Ensure input tensor shapes match the model's requirements
+        3. Verify data types (int64 for IDs, float32 for scales)
+        4. Try adjusting the scale values if audio quality is poor
+        """)
