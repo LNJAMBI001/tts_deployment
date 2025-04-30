@@ -7,30 +7,81 @@ import pickle
 import scipy.io.wavfile as wavfile
 import subprocess
 import sys
+import re
 
 st.set_page_config(page_title="Text to Speech App", layout="centered")
 st.title("🗣️ Text to Speech with Piper TTS")
 
 # ------------------------
-# Install required packages
+# Alternative installation approaches
 # ------------------------
 def install_requirements():
     with st.spinner("Installing required packages..."):
-        # Install piper-phonemize
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "piper-phonemize"])
-            st.success("Successfully installed piper-phonemize!")
+            # Try to install using git
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "git+https://github.com/rhasspy/piper-phonemize"])
+            st.success("Successfully installed piper-phonemize from GitHub!")
             return True
         except Exception as e:
-            st.error(f"Failed to install piper-phonemize: {e}")
-            return False
+            st.error(f"Failed to install from GitHub: {e}")
+            try:
+                # Try to install individual components
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "gruut", "espeak-phonemize"])
+                st.success("Successfully installed alternative phonemization components!")
+                return True
+            except Exception as e2:
+                st.error(f"Failed to install components: {e2}")
+                return False
+
+# Alternative text-to-phoneme function using regex patterns
+def text_to_ipa(text):
+    """
+    Convert text to a very simplified IPA (International Phonetic Alphabet) representation.
+    This is a fallback when proper phonemizers aren't available.
+    """
+    # Simple mapping of English phonemes - very basic approximation
+    phoneme_map = {
+        'a': 'æ', 'e': 'ɛ', 'i': 'ɪ', 'o': 'ɒ', 'u': 'ʌ',
+        'th': 'θ', 'sh': 'ʃ', 'ch': 'tʃ', 'ng': 'ŋ',
+        'ay': 'eɪ', 'ai': 'eɪ', 'ow': 'oʊ', 'ee': 'iː',
+        'er': 'ɜr', 'ar': 'ɑr', 'or': 'ɔr', 'ir': 'ɪr',
+    }
+    
+    # Apply substitutions
+    text = text.lower()
+    for pattern, replacement in phoneme_map.items():
+        text = text.replace(pattern, replacement)
+    
+    # Add spaces between each character to help with tokenization
+    spaced_text = ' '.join(text)
+    
+    # Convert to character codes
+    char_codes = [ord(c) for c in spaced_text]
+    
+    # Format into phoneme structure expected by model
+    # Split by words (assuming spaces denote word boundaries)
+    words = spaced_text.split()
+    phoneme_list = []
+    
+    if not words:  # Handle empty or only spaces
+        return [[char_codes]]
+    
+    for word in words:
+        word_codes = [ord(c) for c in word]
+        if word_codes:  # Only add non-empty
+            phoneme_list.append([word_codes])
+    
+    if not phoneme_list:  # Fallback if nothing was added
+        return [[char_codes]]
+    
+    return phoneme_list
 
 # Check if installation button is clicked
 if 'requirements_installed' not in st.session_state:
     st.session_state.requirements_installed = False
 
 if not st.session_state.requirements_installed:
-    if st.button("Install piper-phonemize"):
+    if st.button("Install Phonemization Tools"):
         st.session_state.requirements_installed = install_requirements()
 
 # ------------------------
@@ -100,40 +151,63 @@ session = load_model()
 tokenizer = load_tokenizer()
 
 # ------------------------
-# Phonemization Functions
+# Alternative phonemization
 # ------------------------
-def use_piper_phonemize(text, language="en-us", phonemizer_type="espeak"):
-    """Use the piper-phonemize library to convert text to phonemes"""
+def try_use_phonemizer(text, language="en-us"):
+    """Try to use any available phonemizer"""
     try:
-        # Try to import piper_phonemize after installation
-        from piper_phonemize import phonemize_espeak, phonemize_segments
-        
-        if phonemizer_type == "espeak":
-            # Use espeak phonemizer
+        # First try piper-phonemize if installed
+        try:
+            from piper_phonemize import phonemize_espeak
             phoneme_list = phonemize_espeak(text, language)
             st.success("✅ Used piper-phonemize with espeak")
-        else:
-            # Use segments phonemizer (alternative)
-            phoneme_list = phonemize_segments(text, language)
-            st.success("✅ Used piper-phonemize with segments")
-            
-        return phoneme_list
-    except Exception as e:
-        st.warning(f"Could not use piper-phonemize: {e}")
-        return None
+            return phoneme_list
+        except ImportError:
+            st.warning("piper-phonemize not available")
         
-def simple_phonemize(text, language="en-us"):
-    """Fallback phonemization if piper-phonemize is not available"""
-    # Just convert each character to its ASCII value and create a flat list
-    phoneme_ids = []
-    for char in text:
-        char_id = ord(char) % 256
-        phoneme_ids.append(char_id)
+        # Try espeak-phonemize if installed
+        try:
+            from espeak_phonemize import phonemize
+            phonemes = phonemize(text, language)
+            # Convert to format expected by the model
+            phoneme_list = []
+            for word in phonemes.split():
+                phoneme_list.append([[ord(c) for c in word]])
+            st.success("✅ Used espeak-phonemize")
+            return phoneme_list
+        except ImportError:
+            st.warning("espeak-phonemize not available")
+            
+        # Try gruut if installed
+        try:
+            import gruut
+            phonemizer = gruut.get_phonemizer(language)
+            words = phonemizer.phonemize(text)
+            phoneme_list = []
+            for word in words:
+                phoneme_list.append([[ord(c) for c in word.phonemes]])
+            st.success("✅ Used gruut phonemizer")
+            return phoneme_list
+        except (ImportError, AttributeError):
+            st.warning("gruut phonemizer not available")
     
-    # Format it for compatibility with piper's phoneme list structure
-    # The phoneme list should be a list of lists of lists
-    # [[word1_phonemes], [word2_phonemes], ...]
-    return [[phoneme_ids]]
+    except Exception as e:
+        st.warning(f"Error using phonemizers: {e}")
+    
+    return None
+
+def simple_phonemize(text, language="en-us"):
+    """Fallback phonemization if other methods are not available"""
+    try:
+        return text_to_ipa(text)
+    except:
+        # Ultimate fallback - use ASCII values
+        phoneme_ids = []
+        for char in text:
+            phoneme_ids.append(ord(char))
+        
+        # Format as expected by the model
+        return [[phoneme_ids]]
 
 # ------------------------
 # UI
@@ -142,19 +216,28 @@ text = st.text_area("Enter text to synthesize:",
                    value="The quick brown fox jumps over the lazy dog.",
                    height=150)
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
     voice = st.selectbox("Voice", ["en-us", "en-gb"])
     
 with col2:
-    phonemizer = st.selectbox("Phonemizer", ["piper (espeak)", "piper (segments)", "simple"])
-    
+    phonemizer = st.selectbox("Phonemization Method", 
+                             ["Enhanced", "IPA Approximation", "Simple ASCII"])
+
+# Speech parameters
+st.subheader("Speech Parameters")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    duration_scale = st.slider("Duration", 0.5, 2.0, 1.0, 0.1, 
+                               help="Controls speech speed. Higher values make speech slower.")
+with col2:
+    pitch_scale = st.slider("Pitch", 0.5, 2.0, 1.0, 0.1,
+                           help="Controls voice pitch. Higher values make voice higher pitched.")
 with col3:
-    # Speech parameters
-    duration_scale = st.slider("Speech Duration", 0.5, 2.0, 1.0, 0.1)
-    pitch_scale = st.slider("Pitch", 0.5, 2.0, 1.0, 0.1)
-    energy_scale = st.slider("Energy", 0.5, 2.0, 1.0, 0.1)
+    energy_scale = st.slider("Energy", 0.5, 2.0, 1.0, 0.1,
+                            help="Controls volume and emphasis. Higher values make speech louder.")
 
 # Debug information
 with st.expander("Debug Information"):
@@ -162,21 +245,36 @@ with st.expander("Debug Information"):
     st.write(f"Tokenizer file exists: {os.path.isfile(TOKENIZER_PATH)}")
     st.write(f"Model directory contents: {os.listdir(MODEL_DIR) if os.path.exists(MODEL_DIR) else 'Directory not found'}")
     
-    # Check if piper-phonemize is available
+    # Check for phonemization tools
+    st.subheader("Available Phonemization Tools")
+    
     try:
         import piper_phonemize
-        st.success("piper-phonemize is installed!")
+        st.success("✅ piper-phonemize is installed")
     except ImportError:
-        st.warning("piper-phonemize is not installed. Use the install button above.")
+        st.warning("❌ piper-phonemize is not installed")
+        
+    try:
+        import espeak_phonemize
+        st.success("✅ espeak-phonemize is installed")
+    except ImportError:
+        st.warning("❌ espeak-phonemize is not installed")
+        
+    try:
+        import gruut
+        st.success("✅ gruut is installed")
+    except ImportError:
+        st.warning("❌ gruut is not installed")
     
     # Show tokenizer info if available
     if tokenizer:
+        st.subheader("Tokenizer Information")
         st.write("Tokenizer loaded successfully")
         st.write(f"Tokenizer type: {type(tokenizer)}")
         try:
             if hasattr(tokenizer, '__dict__'):
                 st.write("Tokenizer attributes:")
-                for key in list(tokenizer.__dict__.keys())[:10]:  # Show first 10 attributes to avoid clutter
+                for key in list(tokenizer.__dict__.keys())[:10]:  # Show first 10 attributes
                     st.write(f"- {key}")
         except:
             st.write("Could not inspect tokenizer attributes")
@@ -222,14 +320,16 @@ if st.button("🎤 Generate Speech") and text.strip():
         # Get phonemes based on selected method
         phoneme_list = None
         
-        if phonemizer.startswith("piper") and st.session_state.requirements_installed:
-            phonemizer_type = "espeak" if "espeak" in phonemizer else "segments"
-            phoneme_list = use_piper_phonemize(text, voice, phonemizer_type)
+        if phonemizer == "Enhanced" and st.session_state.requirements_installed:
+            phoneme_list = try_use_phonemizer(text, voice)
         
-        # Fallback to simple phonemizer if piper fails or isn't selected
         if phoneme_list is None:
-            st.warning("Using simplified phonemization (character-based)")
-            phoneme_list = simple_phonemize(text, voice)
+            if phonemizer == "IPA Approximation":
+                st.info("Using IPA approximation for phonemization")
+                phoneme_list = text_to_ipa(text)
+            else:
+                st.info("Using simple ASCII phonemization")
+                phoneme_list = simple_phonemize(text, voice)
         
         # Flatten phoneme list (convert from list of lists of lists to a single list)
         flat_phonemes = []
@@ -240,6 +340,11 @@ if st.button("🎤 Generate Speech") and text.strip():
                 else:
                     flat_phonemes.append(phoneme)
         
+        # Make sure we have phonemes
+        if not flat_phonemes:
+            st.error("No phonemes were generated. Please try a different text or phonemization method.")
+            st.stop()
+            
         st.write(f"Generated {len(flat_phonemes)} phoneme IDs")
         
         # Create the input tensor with proper shape for the model
@@ -250,8 +355,6 @@ if st.button("🎤 Generate Speech") and text.strip():
         scales = np.array([duration_scale, pitch_scale, energy_scale], dtype=np.float32)
         
         st.write(f"Input tensor shape: {input_tensor.shape}")
-        st.write(f"Input lengths: {input_lengths}")
-        st.write(f"Scales: {scales}")
         
         # Run inference with properly named inputs
         inputs = {
@@ -269,7 +372,8 @@ if st.button("🎤 Generate Speech") and text.strip():
             st.write("Sample phoneme IDs (first 20):")
             st.write(flat_phonemes[:20])
         
-        outputs = session.run(None, inputs)
+        with st.spinner("Generating audio..."):
+            outputs = session.run(None, inputs)
         
         # Assuming the model outputs audio waveform as the first output
         output = outputs[0]
@@ -295,6 +399,10 @@ if st.button("🎤 Generate Speech") and text.strip():
         st.success("✅ Audio generated!")
         st.audio(wav_path, format="audio/wav")
         
+        # Show audio duration
+        duration_seconds = len(output) / 22050
+        st.info(f"Audio length: {duration_seconds:.2f} seconds")
+        
         # Show a plot of the audio waveform
         if st.checkbox("Show audio waveform"):
             import matplotlib.pyplot as plt
@@ -306,7 +414,6 @@ if st.button("🎤 Generate Speech") and text.strip():
             st.pyplot(fig)
             
             # Show some audio statistics
-            st.write(f"Audio length: {len(output)} samples ({len(output)/22050:.2f} seconds)")
             st.write(f"Audio min: {output.min()}, max: {output.max()}, mean: {output.mean():.2f}")
             
     except Exception as e:
@@ -314,11 +421,11 @@ if st.button("🎤 Generate Speech") and text.strip():
         import traceback
         st.error(traceback.format_exc())
         
-        # Provide more specific troubleshooting steps
+        # Provide specific troubleshooting tips
         st.error("Troubleshooting tips:")
         st.markdown("""
-        1. If you're seeing phonemization errors, try installing piper-phonemize
-        2. If you're seeing shape errors, check the phoneme list structure
-        3. Try adjusting the scale values if audio quality is poor
-        4. Try a different input text (some characters might not be supported)
+        1. Try using a different phonemization method
+        2. Try a different text input (some characters might not be supported)
+        3. Increase the duration scale to get longer audio
+        4. Check if the text is too long for the model
         """)
