@@ -8,30 +8,93 @@ import scipy.io.wavfile as wavfile
 import subprocess
 import sys
 import re
+import logging
+import importlib
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("PiperTTS")
 
 st.set_page_config(page_title="Text to Speech App", layout="centered")
 st.title("🗣️ Text to Speech with Piper TTS")
 
 # ------------------------
-# Alternative installation approaches
+# Installation functions
 # ------------------------
+def check_if_package_installed(package_name):
+    """Check if a package is installed"""
+    try:
+        importlib.import_module(package_name)
+        return True
+    except ImportError:
+        return False
+
 def install_requirements():
+    """Install required packages with enhanced error handling"""
     with st.spinner("Installing required packages..."):
-        try:
-            # Try to install using git
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "git+https://github.com/rhasspy/piper-phonemize"])
-            st.success("Successfully installed piper-phonemize from GitHub!")
-            return True
-        except Exception as e:
-            st.error(f"Failed to install from GitHub: {e}")
+        success = False
+        installation_log = []
+        
+        # List of packages to try installing
+        packages = [
+            "piper-phonemize",
+            "gruut",
+            "espeak-phonemize",
+            "phonemizer"
+        ]
+        
+        # First check which are already installed
+        for package in packages:
+            if check_if_package_installed(package.replace('-', '_')):
+                installation_log.append(f"✅ {package} is already installed")
+                success = True
+                continue
+                
+        # Try to install the missing ones individually
+        for package in packages:
+            package_name = package.replace('-', '_')  # Python packages use underscores
+            if not check_if_package_installed(package_name):
+                try:
+                    logger.info(f"Attempting to install {package}...")
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", package])
+                    installation_log.append(f"✅ Successfully installed {package}")
+                    success = True
+                except Exception as e:
+                    installation_log.append(f"❌ Failed to install {package}: {str(e)}")
+        
+        # If all direct installs failed, try alternative methods
+        if not success:
             try:
-                # Try to install individual components
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "gruut", "espeak-phonemize"])
-                st.success("Successfully installed alternative phonemization components!")
-                return True
-            except Exception as e2:
-                st.error(f"Failed to install components: {e2}")
-                return False
+                installation_log.append("Trying to install piper-phonemize from GitHub...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "git+https://github.com/rhasspy/piper-phonemize"])
+                installation_log.append("✅ Successfully installed piper-phonemize from GitHub")
+                success = True
+            except Exception as e:
+                installation_log.append(f"❌ Failed to install from GitHub: {str(e)}")
+                
+                # Try with specific build flags
+                try:
+                    installation_log.append("Trying with specific build flags...")
+                    env = os.environ.copy()
+                    env["CFLAGS"] = "-fPIC"
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "git+https://github.com/rhasspy/piper-phonemize"], env=env)
+                    installation_log.append("✅ Successfully installed piper-phonemize with custom flags")
+                    success = True
+                except Exception as e2:
+                    installation_log.append(f"❌ Failed with custom flags: {str(e2)}")
+        
+        # Display installation results
+        st.write("### Installation Results")
+        for log in installation_log:
+            if log.startswith("✅"):
+                st.success(log)
+            elif log.startswith("❌"):
+                st.error(log)
+            else:
+                st.info(log)
+        
+        return success
 
 # Alternative text-to-phoneme function using regex patterns
 def text_to_ipa(text):
@@ -55,34 +118,58 @@ def text_to_ipa(text):
     # Add spaces between each character to help with tokenization
     spaced_text = ' '.join(text)
     
-    # Convert to character codes
-    char_codes = [ord(c) for c in spaced_text]
-    
-    # Format into phoneme structure expected by model
-    # Split by words (assuming spaces denote word boundaries)
-    words = spaced_text.split()
-    phoneme_list = []
-    
-    if not words:  # Handle empty or only spaces
-        return [[char_codes]]
-    
-    for word in words:
-        word_codes = [ord(c) for c in word]
-        if word_codes:  # Only add non-empty
-            phoneme_list.append([word_codes])
-    
-    if not phoneme_list:  # Fallback if nothing was added
-        return [[char_codes]]
-    
-    return phoneme_list
+    try:
+        # Convert to character codes
+        char_codes = [ord(c) for c in spaced_text]
+        
+        # Format into phoneme structure expected by model
+        # Split by words (assuming spaces denote word boundaries)
+        words = spaced_text.split()
+        phoneme_list = []
+        
+        if not words:  # Handle empty or only spaces
+            return [[char_codes]]
+        
+        for word in words:
+            word_codes = [ord(c) for c in word]
+            if word_codes:  # Only add non-empty
+                phoneme_list.append([word_codes])
+        
+        if not phoneme_list:  # Fallback if nothing was added
+            return [[char_codes]]
+        
+        return phoneme_list
+    except Exception as e:
+        logger.error(f"Error in text_to_ipa: {e}")
+        # Ultimate fallback
+        return [[[ord(c) for c in text]]]
 
 # Check if installation button is clicked
 if 'requirements_installed' not in st.session_state:
     st.session_state.requirements_installed = False
+    
+    # Auto-check which packages are installed
+    st.session_state.available_phonemizers = {
+        "piper_phonemize": check_if_package_installed("piper_phonemize"),
+        "espeak_phonemize": check_if_package_installed("espeak_phonemize"),
+        "gruut": check_if_package_installed("gruut"),
+        "phonemizer": check_if_package_installed("phonemizer")
+    }
+    
+    if any(st.session_state.available_phonemizers.values()):
+        st.session_state.requirements_installed = True
 
 if not st.session_state.requirements_installed:
     if st.button("Install Phonemization Tools"):
         st.session_state.requirements_installed = install_requirements()
+        
+        # Update available phonemizers
+        st.session_state.available_phonemizers = {
+            "piper_phonemize": check_if_package_installed("piper_phonemize"),
+            "espeak_phonemize": check_if_package_installed("espeak_phonemize"),
+            "gruut": check_if_package_installed("gruut"),
+            "phonemizer": check_if_package_installed("phonemizer")
+        }
 
 # ------------------------
 # Download model files
@@ -147,67 +234,127 @@ def load_model():
         st.error("Model file not found. Please check the download URL.")
         return None
 
-session = load_model()
-tokenizer = load_tokenizer()
+try:
+    session = load_model()
+    tokenizer = load_tokenizer()
+except Exception as e:
+    st.error(f"Error loading model or tokenizer: {e}")
+    st.error("Please reload the application and try again.")
+    st.stop()
 
 # ------------------------
-# Alternative phonemization
+# Enhanced phonemization
 # ------------------------
-def try_use_phonemizer(text, language="en-us"):
-    """Try to use any available phonemizer"""
+def phonemize_with_piper(text, language="en-us"):
+    """Try to use piper-phonemize"""
     try:
-        # First try piper-phonemize if installed
-        try:
-            from piper_phonemize import phonemize_espeak
-            phoneme_list = phonemize_espeak(text, language)
-            st.success("✅ Used piper-phonemize with espeak")
-            return phoneme_list
-        except ImportError:
-            st.warning("piper-phonemize not available")
-        
-        # Try espeak-phonemize if installed
-        try:
-            from espeak_phonemize import phonemize
-            phonemes = phonemize(text, language)
-            # Convert to format expected by the model
-            phoneme_list = []
-            for word in phonemes.split():
-                phoneme_list.append([[ord(c) for c in word]])
-            st.success("✅ Used espeak-phonemize")
-            return phoneme_list
-        except ImportError:
-            st.warning("espeak-phonemize not available")
-            
-        # Try gruut if installed
-        try:
-            import gruut
-            phonemizer = gruut.get_phonemizer(language)
-            words = phonemizer.phonemize(text)
-            phoneme_list = []
-            for word in words:
-                phoneme_list.append([[ord(c) for c in word.phonemes]])
-            st.success("✅ Used gruut phonemizer")
-            return phoneme_list
-        except (ImportError, AttributeError):
-            st.warning("gruut phonemizer not available")
-    
+        from piper_phonemize import phonemize_espeak
+        return phonemize_espeak(text, language)
     except Exception as e:
-        st.warning(f"Error using phonemizers: {e}")
-    
-    return None
+        logger.warning(f"Error with piper-phonemize: {e}")
+        return None
 
-def simple_phonemize(text, language="en-us"):
-    """Fallback phonemization if other methods are not available"""
+def phonemize_with_espeak(text, language="en-us"):
+    """Try to use espeak-phonemize"""
     try:
-        return text_to_ipa(text)
-    except:
-        # Ultimate fallback - use ASCII values
-        phoneme_ids = []
-        for char in text:
-            phoneme_ids.append(ord(char))
+        from espeak_phonemize import phonemize
+        phonemes = phonemize(text, language)
+        # Convert to format expected by the model
+        phoneme_list = []
+        for word in phonemes.split():
+            phoneme_list.append([[ord(c) for c in word]])
+        return phoneme_list
+    except Exception as e:
+        logger.warning(f"Error with espeak-phonemize: {e}")
+        return None
+
+def phonemize_with_gruut(text, language="en-us"):
+    """Try to use gruut"""
+    try:
+        import gruut
+        phonemizer = gruut.get_phonemizer(language)
+        words = phonemizer.phonemize(text)
+        phoneme_list = []
+        for word in words:
+            phoneme_list.append([[ord(c) for c in word.phonemes]])
+        return phoneme_list
+    except Exception as e:
+        logger.warning(f"Error with gruut: {e}")
+        return None
+
+def phonemize_with_phonemizer(text, language="en-us"):
+    """Try to use phonemizer"""
+    try:
+        from phonemizer.backend import EspeakBackend
+        from phonemizer.phonemize import phonemize
         
-        # Format as expected by the model
-        return [[phoneme_ids]]
+        # Map language codes
+        lang_map = {
+            "en-us": "en-us",
+            "en-gb": "en-gb"
+        }
+        
+        espeak_lang = lang_map.get(language, "en-us")
+        backend = EspeakBackend(language=espeak_lang)
+        
+        # Phonemize with espeak
+        phonemes = phonemize(
+            text, 
+            backend=backend,
+            strip=True,
+            preserve_punctuation=True,
+            with_stress=True
+        )
+        
+        # Convert to format expected by model
+        phoneme_list = []
+        for word in phonemes.split():
+            phoneme_list.append([[ord(c) for c in word]])
+        
+        return phoneme_list
+    except Exception as e:
+        logger.warning(f"Error with phonemizer: {e}")
+        return None
+
+def try_all_phonemizers(text, language="en-us"):
+    """Try all available phonemizers in order of preference"""
+    results = []
+    
+    # Check which phonemizers are available
+    available = st.session_state.available_phonemizers
+    
+    # Try piper-phonemize first (best option)
+    if available.get("piper_phonemize", False):
+        result = phonemize_with_piper(text, language)
+        if result:
+            logger.info("Used piper-phonemize successfully")
+            return result, "piper-phonemize"
+    
+    # Try espeak-phonemize
+    if available.get("espeak_phonemize", False):
+        result = phonemize_with_espeak(text, language)
+        if result:
+            logger.info("Used espeak-phonemize successfully")
+            return result, "espeak-phonemize"
+    
+    # Try gruut
+    if available.get("gruut", False):
+        result = phonemize_with_gruut(text, language)
+        if result:
+            logger.info("Used gruut successfully")
+            return result, "gruut"
+    
+    # Try phonemizer
+    if available.get("phonemizer", False):
+        result = phonemize_with_phonemizer(text, language)
+        if result:
+            logger.info("Used phonemizer successfully")
+            return result, "phonemizer"
+    
+    # Fallback: Use text_to_ipa
+    result = text_to_ipa(text)
+    logger.info("Used IPA approximation fallback")
+    return result, "IPA approximation"
 
 # ------------------------
 # UI
@@ -222,8 +369,23 @@ with col1:
     voice = st.selectbox("Voice", ["en-us", "en-gb"])
     
 with col2:
-    phonemizer = st.selectbox("Phonemization Method", 
-                             ["Enhanced", "IPA Approximation", "Simple ASCII"])
+    # Only show phonemization options that are available
+    phonemizer_options = ["Auto-detect best available"]
+    
+    available = getattr(st.session_state, "available_phonemizers", {})
+    if available.get("piper_phonemize", False):
+        phonemizer_options.append("piper-phonemize")
+    if available.get("espeak_phonemize", False):
+        phonemizer_options.append("espeak-phonemize")
+    if available.get("gruut", False):
+        phonemizer_options.append("gruut")
+    if available.get("phonemizer", False):
+        phonemizer_options.append("phonemizer")
+        
+    # Always add fallbacks
+    phonemizer_options.extend(["IPA Approximation", "Simple ASCII"])
+    
+    phonemizer_method = st.selectbox("Phonemization Method", phonemizer_options)
 
 # Speech parameters
 st.subheader("Speech Parameters")
@@ -248,23 +410,12 @@ with st.expander("Debug Information"):
     # Check for phonemization tools
     st.subheader("Available Phonemization Tools")
     
-    try:
-        import piper_phonemize
-        st.success("✅ piper-phonemize is installed")
-    except ImportError:
-        st.warning("❌ piper-phonemize is not installed")
-        
-    try:
-        import espeak_phonemize
-        st.success("✅ espeak-phonemize is installed")
-    except ImportError:
-        st.warning("❌ espeak-phonemize is not installed")
-        
-    try:
-        import gruut
-        st.success("✅ gruut is installed")
-    except ImportError:
-        st.warning("❌ gruut is not installed")
+    available_phonemizers = st.session_state.get("available_phonemizers", {})
+    for phonemizer, is_available in available_phonemizers.items():
+        if is_available:
+            st.success(f"✅ {phonemizer} is installed")
+        else:
+            st.warning(f"❌ {phonemizer} is not installed")
     
     # Show tokenizer info if available
     if tokenizer:
@@ -319,17 +470,37 @@ if st.button("🎤 Generate Speech") and text.strip():
     try:
         # Get phonemes based on selected method
         phoneme_list = None
+        used_method = None
         
-        if phonemizer == "Enhanced" and st.session_state.requirements_installed:
-            phoneme_list = try_use_phonemizer(text, voice)
+        if phonemizer_method == "Auto-detect best available":
+            phoneme_list, used_method = try_all_phonemizers(text, voice)
+            st.info(f"Using {used_method} for phonemization")
+        elif phonemizer_method == "piper-phonemize" and st.session_state.available_phonemizers.get("piper_phonemize", False):
+            phoneme_list = phonemize_with_piper(text, voice)
+            used_method = "piper-phonemize"
+        elif phonemizer_method == "espeak-phonemize" and st.session_state.available_phonemizers.get("espeak_phonemize", False):
+            phoneme_list = phonemize_with_espeak(text, voice)
+            used_method = "espeak-phonemize"
+        elif phonemizer_method == "gruut" and st.session_state.available_phonemizers.get("gruut", False):
+            phoneme_list = phonemize_with_gruut(text, voice)
+            used_method = "gruut"
+        elif phonemizer_method == "phonemizer" and st.session_state.available_phonemizers.get("phonemizer", False):
+            phoneme_list = phonemize_with_phonemizer(text, voice)
+            used_method = "phonemizer"
+        elif phonemizer_method == "IPA Approximation":
+            phoneme_list = text_to_ipa(text)
+            used_method = "IPA approximation"
+        else:
+            # Simple ASCII - simplest fallback
+            phoneme_list = [[[ord(c) for c in text]]]
+            used_method = "Simple ASCII"
         
         if phoneme_list is None:
-            if phonemizer == "IPA Approximation":
-                st.info("Using IPA approximation for phonemization")
-                phoneme_list = text_to_ipa(text)
-            else:
-                st.info("Using simple ASCII phonemization")
-                phoneme_list = simple_phonemize(text, voice)
+            st.warning("Selected phonemizer failed. Falling back to IPA approximation.")
+            phoneme_list = text_to_ipa(text)
+            used_method = "IPA approximation (fallback)"
+            
+        st.success(f"Successfully phonemized text using {used_method}")
         
         # Flatten phoneme list (convert from list of lists of lists to a single list)
         flat_phonemes = []
@@ -353,8 +524,6 @@ if st.button("🎤 Generate Speech") and text.strip():
         
         # Set scales according to UI sliders
         scales = np.array([duration_scale, pitch_scale, energy_scale], dtype=np.float32)
-        
-        st.write(f"Input tensor shape: {input_tensor.shape}")
         
         # Run inference with properly named inputs
         inputs = {
