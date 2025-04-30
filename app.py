@@ -59,27 +59,25 @@ def load_tokenizer():
         st.error("Tokenizer file not found. Please check the download URL.")
         return None
 
-# Simplified phonemization function as a fallback if piper-phonemize fails
-def simple_phonemize(text, voice="en-us"):
-    """Very basic phonemization fallback"""
-    # This is a simplified placeholder. In production, implement proper phonemization
-    # or ensure piper-phonemize is correctly installed
-    tokenizer = load_tokenizer()
-    if tokenizer is None:
-        # Fallback if tokenizer failed to load
-        chars = [ord(c) for c in text]
-        return [[chars]]
+# ------------------------
+# Very simple text-to-phoneme conversion
+# ------------------------
+def simple_phonemize(text, language="en-us"):
+    """
+    Very basic phonemization that just converts text to ASCII values.
+    This is a placeholder and won't produce proper phonemes.
+    """
+    # Just convert each character to its ASCII value and create a flat list
+    phoneme_ids = []
+    for char in text:
+        # Convert to int and ensure it's within a reasonable range for the model
+        char_id = ord(char) % 256  # Cap at 256 to avoid large values
+        phoneme_ids.append(char_id)
     
-    # Use tokenizer to convert text to phoneme IDs
-    # Adjust this part based on your tokenizer's actual interface
-    try:
-        # This is a placeholder - replace with actual tokenizer usage
-        phonemes = tokenizer.encode(text)
-        return [[phonemes]]
-    except:
-        # Ultimate fallback
-        chars = [ord(c) for c in text]
-        return [[chars]]
+    # Add padding or special tokens if needed (model-dependent)
+    # You might need to add start/end tokens depending on your model
+    
+    return phoneme_ids
 
 # ------------------------
 # Load model
@@ -101,7 +99,7 @@ session = load_model()
 # ------------------------
 # UI
 # ------------------------
-text = st.text_area("Enter text to synthesize:", height=150)
+text = st.text_area("Enter text to synthesize:", value="Hello, this is a test.", height=150)
 voice = st.selectbox("Voice", ["en-us"])  # More voices can be added
 
 # Debug information
@@ -110,38 +108,94 @@ with st.expander("Debug Information"):
     st.write(f"Tokenizer file exists: {os.path.isfile(TOKENIZER_PATH)}")
     st.write(f"Model directory contents: {os.listdir(MODEL_DIR) if os.path.exists(MODEL_DIR) else 'Directory not found'}")
 
+# Show a raw tokenizer preview
+tokenizer = load_tokenizer()
+if tokenizer:
+    with st.expander("Tokenizer Information"):
+        st.write("Tokenizer loaded successfully")
+        st.write(f"Tokenizer type: {type(tokenizer)}")
+        # Try to display some basic info about the tokenizer
+        try:
+            if hasattr(tokenizer, '__dict__'):
+                st.write("Tokenizer attributes:")
+                for key in tokenizer.__dict__:
+                    st.write(f"- {key}")
+        except:
+            st.write("Could not inspect tokenizer attributes")
+
 if st.button("🎤 Generate Speech") and text.strip():
     if not session:
         st.error("Model could not be loaded. Please check the error messages above.")
         st.stop()
         
     try:
-        # Try to import and use piper_phonemize
-        try:
-            from piper_phonemize import phonemize_espeak
-            phonemes = phonemize_espeak(text, voice)
-            st.success("Using piper-phonemize for phonemization")
-        except ImportError:
-            st.warning("Using simplified phonemization as piper-phonemize is not available.")
-            phonemes = simple_phonemize(text, voice)
+        # Use the simple phonemizer since piper-phonemize is not available
+        st.info("Using simplified phonemization (character-based)")
         
-        # Convert phonemes to input format expected by the model
-        flat_phonemes = [item for sublist in phonemes for item in sublist]
-        phoneme_ids = np.array([[int(p) for p in flat_phonemes]], dtype=np.int64)
+        # Get phoneme IDs using our simple method
+        phoneme_ids = simple_phonemize(text, voice)
+        
+        # Print the phoneme IDs for debugging
+        st.write(f"Generated {len(phoneme_ids)} phoneme IDs")
+        
+        # Create the input tensor with proper shape for the model
+        # Shape should be [batch_size=1, sequence_length]
+        phoneme_tensor = np.array([phoneme_ids], dtype=np.int64)
+        
+        st.write(f"Input tensor shape: {phoneme_tensor.shape}")
         
         # Run inference
-        inputs = {"phoneme_ids": phoneme_ids}
+        inputs = {"phoneme_ids": phoneme_tensor}
+        
+        # Add a checkbox to show the actual input
+        if st.checkbox("Show model input"):
+            st.write("Model input:")
+            st.write(inputs)
+        
         outputs = session.run(None, inputs)
         
         # Assuming the model outputs audio waveform as the first output
-        output = outputs[0]  
+        output = outputs[0]
+        
+        st.write(f"Output shape: {output.shape}")
+        
+        # Check if output looks like audio (1D array of floats)
+        if len(output.shape) > 1:
+            output = output.squeeze()
+        
+        # Normalize audio if needed
+        if output.max() > 1.0 or output.min() < -1.0:
+            output = np.clip(output, -1.0, 1.0)
+        
+        # Convert to proper format for WAV if needed
+        if output.dtype != np.int16:
+            output = (output * 32767).astype(np.int16)
         
         # Save audio to WAV
         wav_path = os.path.join(MODEL_DIR, "output.wav")
-        wavfile.write(wav_path, rate=22050, data=output.squeeze())
+        wavfile.write(wav_path, rate=22050, data=output)
         
         st.success("✅ Audio generated!")
         st.audio(wav_path, format="audio/wav")
     except Exception as e:
         st.error(f"❌ Error during inference: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         st.error("Please check if all model files are correctly downloaded and the input format is correct.")
+        
+        # Add model info to help debug
+        try:
+            # Get input names and shapes
+            input_details = []
+            for i in range(len(session.get_inputs())):
+                input_detail = session.get_inputs()[i]
+                input_details.append({
+                    "name": input_detail.name,
+                    "shape": input_detail.shape,
+                    "type": input_detail.type
+                })
+            
+            st.write("Model expects these inputs:")
+            st.write(input_details)
+        except:
+            st.write("Could not get model input details")
