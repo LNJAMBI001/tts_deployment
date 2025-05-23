@@ -2,7 +2,7 @@ import streamlit as st
 import onnxruntime as ort
 import numpy as np
 import torch
-#import torchaudio
+import torchaudio
 from io import BytesIO
 from piper_phonemize import phonemize_espeak, phoneme_ids_espeak
 import os
