@@ -4,3 +4,6 @@ libespeak-ng-dev
 ffmpeg
 portaudio19-dev
 libsndfile1
+libnccl2
+libnccl-dev
+
