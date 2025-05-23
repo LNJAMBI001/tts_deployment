@@ -7,6 +7,3 @@ libsndfile1
 libsox-dev
 build-essential
 cmake
-libnccl2
-libnccl-dev
-
