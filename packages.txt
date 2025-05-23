@@ -1,3 +1,5 @@
 espeak-ng
 espeak-ng-data
 libespeak-ng-dev
+ffmpeg
+portaudio19-dev
